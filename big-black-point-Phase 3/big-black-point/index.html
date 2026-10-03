@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Big Black Point - Client Intake</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&family=DM+Sans:wght@300;400;500;600&family=Quicksand:wght@500;600;700&family=Roboto+Slab:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css?v=4">
+</head>
+<body>
+<header>
+  <div class="logo">Big Black Point 07/26</div>
+  <div class="hdr-center">
+    <div class="stat-chip">Groups active: <b id="hgroups">0</b> / <b id="hgroupTotal">8</b></div>
+    <div class="stat-chip">Filled: <b id="hfilled">0</b> / <b id="htotal">0</b></div>
+  </div>
+  <div class="hdr-right">
+    <div class="save-wrap visible" id="save-wrap">
+      <button class="btn btn-save" onclick="openModal()">Save as preset</button>
+    </div>
+    <input id="importFile" type="file" accept="application/json,.json" style="display:none" onchange="importJSON(event)">
+    <button class="btn" id="themeBtn" onclick="toggleTheme()">Dark mode</button>
+    <button class="btn btn-primary" id="gen1" onclick="generatePrompt()">Generate</button>
+    <button class="btn" id="copyPromptTop" onclick="copyPrompt()">Copy prompt</button>
+    <div class="action-menu">
+      <button class="btn icon-btn" onclick="toggleActionMenu(event);return false" aria-label="More actions">More</button>
+      <div class="action-popover" id="actionMenu">
+        <button onclick="document.getElementById('importFile').click();closeActionMenu()">Upload JSON</button>
+        <button onclick="dlJSON();closeActionMenu()">Download JSON</button>
+        <button onclick="resetAll();closeActionMenu()">Reset all fields</button>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="app">
+
+<nav class="sidebar">
+  <div class="slabel">Intake steps</div>
+  <div class="filter-panel">
+    <select class="filter-input" id="settingMode" onchange="setSettingMode(this.value)">
+      <option value="basic">Basic settings</option>
+      <option value="advanced" selected>Advanced settings</option>
+    </select>
+    <input class="filter-input" id="q" type="search" placeholder="Search fields..." oninput="applyFilters()">
+    <select class="filter-input" id="tierFilter" onchange="applyFilters()">
+      <option value="all">All tiers</option>
+      <option value="T1">T1 only (required)</option>
+      <option value="T2">T2 only (optional)</option>
+    </select>
+    <select class="filter-input" id="promptMode" onchange="generatePrompt()">
+      <option value="copywriting">Copywriting prompt</option>
+      <option value="developer">Developer implementation prompt</option>
+      <option value="api_payload">JSON API payload</option>
+      <option value="creative_brief">Creative brief</option>
+      <option value="production_checklist">Production checklist</option>
+    </select>
+  </div>
+  <div id="nav"></div>
+  <div class="preset-panel">
+    <div class="pp-header">
+      <div class="pp-title">Saved presets</div>
+      <div class="pp-count" id="pp-count">0</div>
+    </div>
+    <div class="preset-list" id="plist"><div class="no-presets">No presets saved yet</div></div>
+  </div>
+</nav>
+
+<main class="main" id="mform"></main>
+
+<aside class="jpanel">
+  <div class="jp-stats">
+    <div class="jp-stat"><div class="jp-n" id="sf">0</div><div class="jp-l">filled</div></div>
+    <div class="jp-stat"><div class="jp-n" id="sg">0</div><div class="jp-l">required</div></div>
+    <div class="jp-stat"><div class="jp-n" id="ss">-</div><div class="jp-l">bytes</div></div>
+  </div>
+  <div class="validation-panel" id="validationPanel"></div>
+  <div class="prompt-preview" id="promptPreview">
+    <div class="ppv-title">Generated prompt preview</div>
+    <pre id="promptPreviewText">Generate a prompt to preview it here.</pre>
+  </div>
+  <div class="jp-out"><pre class="jout" id="jout"></pre></div>
+  <div class="prog-wrap">
+    <div class="prog-lab"><span>Completion</span><span id="ppct">0%</span></div>
+    <div class="prog-bar"><div class="prog-fill" id="pfill" style="width:0%"></div></div>
+  </div>
+</aside>
+</div>
+
+<!-- SAVE MODAL -->
+<div class="modal-bg" id="mbg" onclick="bgClick(event)">
+  <div class="modal">
+    <div class="modal-title">Save as preset</div>
+    <div class="modal-sub">Name this intake to save and reload it any time.</div>
+    <label class="modal-lbl">Preset name</label>
+    <input class="modal-inp" id="pname" type="text" placeholder="e.g. Sunrise Bakery intake" maxlength="70"
+      onkeydown="if(event.key==='Enter')savePreset()">
+    <div class="modal-info" id="minfo">Fields filled across steps</div>
+    <div class="modal-acts">
+      <button class="btn" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-save" onclick="savePreset()">Save preset</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="js/app.js?v=6"></script>
+</body>
+</html>
