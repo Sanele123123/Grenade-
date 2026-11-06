@@ -1,0 +1,21 @@
+# One-click deploy for the public demo on Render (https://render.com).
+# New > Blueprint > pick this repo. Free plan works; it sleeps when idle,
+# so open the link a minute before a client call.
+services:
+  - type: web
+    name: big-black-point-demo
+    runtime: node
+    rootDir: big-black-point-Phase 3
+    plan: free
+    buildCommand: echo "no build step"
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: BBP_DEMO_MODE
+        value: "true"
+      - key: BBP_ADMIN_TOKEN
+        generateValue: true
+      - key: BBP_ENCRYPTION_KEY
+        generateValue: true

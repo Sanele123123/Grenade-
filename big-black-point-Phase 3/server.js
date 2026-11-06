@@ -4,15 +4,26 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const ROOT = __dirname;
-const DATA_DIR = path.join(ROOT, 'data');
+const DATA_DIR = process.env.BBP_DATA_DIR || path.join(ROOT, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'bbp-data.json');
 const KEY_FILE = path.join(DATA_DIR, '.dev-encryption-key');
 const SITES_DIR = path.join(DATA_DIR, 'sites');
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
 const ADMIN_TOKEN = process.env.BBP_ADMIN_TOKEN || 'bbp-local-admin';
+if (!process.env.BBP_ADMIN_TOKEN && !['127.0.0.1', 'localhost', '::1'].includes(HOST)) {
+  console.error('Refusing to start: BBP_ADMIN_TOKEN must be set when HOST is not loopback (the default token is public).');
+  process.exit(1);
+}
 const CALLBACK_URL = process.env.BBP_CALLBACK_URL || `http://${HOST}:${PORT}/api/callback`;
 const REAL_OUTBOUND = process.env.BBP_ENABLE_REAL_OUTBOUND === 'true';
+// Public-demo mode: builds sample sites from a template (no AI keys, no network
+// calls) and lets anonymous visitors use only the client-facing routes. Admin and
+// settings routes still require the admin token. See demo-site.js.
+const DEMO_MODE = process.env.BBP_DEMO_MODE === 'true';
+const { buildDemoSite, demoSuggestList } = require('./demo-site');
+const DEMO_MAX_JOBS_PER_VISITOR_PER_HOUR = Number(process.env.BBP_DEMO_JOBS_PER_HOUR || 6);
+const DEMO_MAX_STORED_JOBS = Number(process.env.BBP_DEMO_MAX_JOBS || 40);
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(SITES_DIR, { recursive: true });
@@ -103,7 +114,7 @@ function mergeSettings(existing, incoming) {
 }
 
 function publicJob(job) {
-  const { timerIds, brief, aiResult, generatedFiles, uploads, ...visible } = job;
+  const { timerIds, brief, aiResult, generatedFiles, uploads, owner, ...visible } = job;
   return visible;
 }
 
@@ -122,7 +133,8 @@ function readBody(req) {
     let raw = '';
     req.on('data', chunk => {
       raw += chunk;
-      if (raw.length > 30_000_000) reject(new Error('Request body too large (30MB limit)'));
+      const limit = DEMO_MODE ? 5_000_000 : 30_000_000;
+      if (raw.length > limit) { reject(new Error(`Request body too large (${limit / 1_000_000}MB limit)`)); req.destroy(); }
     });
     req.on('end', () => {
       if (!raw) return resolve({});
@@ -130,6 +142,38 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
+}
+
+function isAdminRequest(req) {
+  return (req.headers.authorization || '') === `Bearer ${ADMIN_TOKEN}`;
+}
+
+// Routes an anonymous visitor may use in demo mode: the client-facing build flow only.
+// Settings, sites, providers, webhooks, deliveries, logo/image generation and the
+// system prompt all stay admin-only.
+function isDemoPublicRoute(method, pathname) {
+  if (method === 'GET' && pathname === '/api/jobs') return true;
+  if (method === 'POST' && pathname === '/api/jobs') return true;
+  if (method === 'POST' && pathname === '/api/text/generate') return true;
+  if (method === 'GET' && /^\/api\/jobs\/[^/]+\/files(\/zip)?$/.test(pathname)) return true;
+  if (method === 'POST' && /^\/api\/jobs\/[^/]+\/(approve|revise)$/.test(pathname)) return true;
+  return false;
+}
+
+function demoVisitorId(req, res) {
+  const match = /(?:^|;\s*)bbp_demo=([0-9a-f-]{36})/.exec(req.headers.cookie || '');
+  if (match) return match[1];
+  const id = crypto.randomUUID();
+  res.setHeader('Set-Cookie', `bbp_demo=${id}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`);
+  return id;
+}
+
+// Keeps a public demo from growing without bound: drop the oldest jobs and their generated files.
+function pruneDemoJobs(data) {
+  while (data.jobs.length > DEMO_MAX_STORED_JOBS) {
+    const old = data.jobs.pop();
+    try { fs.rmSync(siteOutputDir(old), { recursive: true, force: true }); } catch {}
+  }
 }
 
 function requireAdmin(req, res) {
@@ -621,6 +665,7 @@ function enforceLogoSizing(files) {
 }
 
 async function callAiBuildProvider(data, job) {
+  if (DEMO_MODE) { await delay(1500); return buildDemoSite(job); }
   const provider = job.provider || data.settings?.webhooks?.aiProvider || 'claude';
   const cfg = aiConfig(data, provider);
   const instruction = buildAiInstruction(job);
@@ -669,6 +714,7 @@ async function callAiBuildProvider(data, job) {
 // services/products list) — separate from callAiBuildProvider, which is for the
 // full website build and always uses the much larger token budget/system prompt.
 async function generateTextWithClaude(data, prompt) {
+  if (DEMO_MODE) return { ok: true, simulated: false, text: demoSuggestList(prompt) };
   const cfg = aiConfig(data, 'claude');
   if (!REAL_OUTBOUND) {
     return { ok: true, simulated: true, text: '' };
@@ -762,7 +808,7 @@ function writeSiteFiles(job, files) {
   fs.mkdirSync(dir, { recursive: true });
   for (const [filename, contents] of Object.entries(files || {})) {
     const target = path.join(dir, filename);
-    if (!target.startsWith(dir)) continue; // guard against path traversal in filenames
+    if (target !== dir && !target.startsWith(dir + path.sep)) continue; // guard against path traversal in filenames
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, contents ?? '');
   }
@@ -864,6 +910,7 @@ function zipFilesObject(filesObj) {
 }
 
 async function deployToNetlify(data, job) {
+  if (DEMO_MODE) return { ok: true, simulated: true, provider: 'demo', siteUrl: `/preview/${job.id}/` };
   const cfg = netlifyConfig(data);
   const dir = siteOutputDir(job);
   if (!REAL_OUTBOUND) {
@@ -1025,7 +1072,12 @@ async function retryJobStep(jobId, operation) {
 function serveStatic(req, res, pathname) {
   const requested = pathname === '/' ? '/preview.html' : pathname;
   const file = path.join(ROOT, decodeURIComponent(requested));
-  if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return false;
+  // Only the front-end is public: preview.html and the wizard folder. Never server code,
+  // package files, dotfiles, or the data directory (which holds settings and the encryption key).
+  const rel = path.relative(ROOT, file).split(path.sep).join('/');
+  const allowed = rel === 'preview.html' || rel.startsWith('big-black-point/');
+  if (!allowed || rel.split('/').some(part => part.startsWith('.'))) return false;
+  if (!file.startsWith(ROOT + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) return false;
   const ext = path.extname(file);
   const contentType = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8' }[ext] || 'application/octet-stream';
   res.writeHead(200, { 'Content-Type': contentType });
@@ -1154,7 +1206,7 @@ function servePreview(req, res, jobId, subPath) {
   let relative = decodeURIComponent(subPath || '');
   if (!relative || relative.endsWith('/')) relative += 'index.html';
   const file = path.join(jobDir, relative);
-  if (!file.startsWith(jobDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+  if (!file.startsWith(jobDir + path.sep) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
     json(res, 404, { error: 'File not found in this preview' });
     return;
   }
@@ -1191,7 +1243,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, service: 'bbp-engine', realOutbound: REAL_OUTBOUND });
+    if (pathname === '/api/health' && req.method === 'GET') return json(res, 200, { ok: true, service: 'bbp-engine', realOutbound: REAL_OUTBOUND, demo: DEMO_MODE });
     if (pathname === '/api/callback' && req.method === 'POST') {
       const raw = await new Promise(resolve => { let body = ''; req.on('data', c => body += c); req.on('end', () => resolve(body)); });
       const data = loadData();
@@ -1221,7 +1273,7 @@ const server = http.createServer(async (req, res) => {
       const relFile = String(body.file || 'index.html').replace(/^\/+/, '');
       const jobDir = siteOutputDir(job);
       const targetFile = path.join(jobDir, relFile);
-      if (!targetFile.startsWith(jobDir)) return json(res, 400, { error: 'Invalid file path' });
+      if (!targetFile.startsWith(jobDir + path.sep)) return json(res, 400, { error: 'Invalid file path' });
       if (!fs.existsSync(targetFile)) return json(res, 404, { error: 'File not found in this preview' });
       const html = String(body.html || '');
       if (!html.trim()) return json(res, 400, { error: 'Empty content' });
@@ -1233,7 +1285,11 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
-    if (!requireAdmin(req, res)) return;
+    let demoVisitor = null;
+    if (DEMO_MODE && !isAdminRequest(req)) {
+      if (!isDemoPublicRoute(req.method, pathname)) return json(res, 401, { error: 'This action is disabled in the public demo' });
+      demoVisitor = demoVisitorId(req, res);
+    } else if (!requireAdmin(req, res)) return;
     const data = loadData();
 
     if (pathname === '/api/settings' && req.method === 'GET') return json(res, 200, { settings: exposeSettings(data.settings), callbackUrl: CALLBACK_URL });
@@ -1257,7 +1313,7 @@ const server = http.createServer(async (req, res) => {
       if (!site) return json(res, 404, { error: 'Site not found' });
       site.status = 'connected'; site.lastCheckedAt = new Date().toISOString(); saveData(data); return json(res, 200, { site: publicSite(site), simulated: true });
     }
-    if (pathname === '/api/jobs' && req.method === 'GET') return json(res, 200, { jobs: data.jobs.map(publicJob) });
+    if (pathname === '/api/jobs' && req.method === 'GET') return json(res, 200, { jobs: data.jobs.filter(job => !demoVisitor || job.owner === demoVisitor).map(publicJob) });
     if (/^\/api\/jobs\/[^/]+\/files$/.test(pathname) && req.method === 'GET') {
       const id = pathname.split('/')[3]; const job = data.jobs.find(item => item.id === id);
       if (!job) return json(res, 404, { error: 'Job not found' });
@@ -1280,9 +1336,14 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/deliveries' && req.method === 'GET') return json(res, 200, { deliveries: data.deliveries || [] });
     if (pathname === '/api/jobs' && req.method === 'POST') {
       const body = await readBody(req);
+      if (demoVisitor) {
+        const recent = data.jobs.filter(item => item.owner === demoVisitor && Date.now() - Date.parse(item.createdAt) < 3_600_000).length;
+        if (recent >= DEMO_MAX_JOBS_PER_VISITOR_PER_HOUR) return json(res, 429, { error: 'Demo limit reached \u2014 please try again in a little while.' });
+      }
       const job = {
         id: crypto.randomUUID(),
-        name: body.name,
+        owner: demoVisitor || undefined,
+        name: String(body.name || '').slice(0, 120),
         domain: body.domain || body.siteDomain || '',
         siteUrl: body.siteUrl || '',
         provider: body.provider || data.settings?.webhooks?.aiProvider || 'claude',
@@ -1294,7 +1355,7 @@ const server = http.createServer(async (req, res) => {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       };
-      data.jobs.unshift(job); saveData(data); runJob(job.id);
+      data.jobs.unshift(job); if (DEMO_MODE) pruneDemoJobs(data); saveData(data); runJob(job.id);
       if (data.settings?.webhooks?.evSubmit !== false) await sendWebhook(data, 'build.submitted', { job: publicJob(job), brief: body.brief || {} });
       return json(res, 202, { job: publicJob(job) });
     }
@@ -1403,7 +1464,8 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`Big Black Point engine listening on http://${HOST}:${PORT}`);
-  console.log(`Local admin token: ${ADMIN_TOKEN}`);
+  console.log(process.env.BBP_ADMIN_TOKEN ? 'Admin token: set via BBP_ADMIN_TOKEN' : 'Local admin token: bbp-local-admin (default \u2014 set BBP_ADMIN_TOKEN for any public deployment)');
+  if (DEMO_MODE) console.log('Demo mode: ON (template-built sample sites, anonymous visitors limited to the client flow)');
   console.log(`Real outbound requests: ${REAL_OUTBOUND ? 'enabled' : 'disabled (simulation mode)'}`);
 });
 

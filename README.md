@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/33284393/README.md)
 # Big Black Point
 
 A Big Black Point prototype for creating a structured website brief and running it through the Claude (or OpenAI) → static HTML/CSS/JS → Netlify build pipeline.
@@ -10,7 +9,8 @@ A Big Black Point prototype for creating a structured website brief and running 
 - `js/app.js` - 8-step wizard step/field definitions, rendering, state, presets, validation, import/export, and prompt generation.
 - `../preview.html` - Integrated prototype preview with the operator Integrations dashboard.
 - `../server.js` - Dependency-free local API engine with encrypted settings, persistent sites/jobs, and signed webhook callbacks.
-- `../.env.example` - Production environment variable template.
+- `../.env.example` - Environment variable template.
+- `../demo-site.js` - Template site generator used by demo mode.
 
 ## Run Locally
 
@@ -70,3 +70,12 @@ An earlier version of this pipeline provisioned WordPress sites via Plesk/WP Too
 ## Notes For Developers
 
 The app is intentionally dependency-free. Keep shared data definitions in `js/app.js` near the top, and keep UI behavior grouped by feature so future changes are easy to follow.
+
+
+## Public Demo Mode
+
+Set `BBP_DEMO_MODE=true` to show the product to clients without any AI keys. The full flow works: intake wizard, build progress, review, request changes, approve. Sites are produced from a template using the wizard answers (name, location, contact details, pages, services/products, colour palette) instead of an AI call, and every generated site says so in its footer.
+
+In demo mode anonymous visitors can only use the client flow. Each visitor sees only their own builds, builds are rate-limited (`BBP_DEMO_JOBS_PER_HOUR`, default 6), old jobs are pruned (`BBP_DEMO_MAX_JOBS`, default 40), and settings/integrations routes stay locked behind `BBP_ADMIN_TOKEN`.
+
+Deploy: `render.yaml` at the repo root sets this up on Render (New > Blueprint). Or on any Node host: root directory `big-black-point-Phase 3`, start command `npm start`, and the variables in `.env.example` (`HOST=0.0.0.0`, `BBP_ADMIN_TOKEN`, `BBP_ENCRYPTION_KEY`, `BBP_DEMO_MODE=true`).

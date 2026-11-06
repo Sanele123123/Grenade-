@@ -1,0 +1,5 @@
+node_modules/
+.env
+.DS_Store
+# Runtime data: settings, encrypted keys, jobs and generated sites. Never commit.
+**/data/
